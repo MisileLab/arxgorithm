@@ -1,0 +1,59 @@
+version: "3.8"
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - HELIXDB_URL=http://helixdb:6334
+      - DATABASE_URL=postgresql://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+    depends_on:
+      - helixdb
+      - postgres
+
+  helixdb:
+    image: helixdb/helixdb:latest
+    ports:
+      - "6334:6334"
+    volumes:
+      - helixdb_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: arxgorithm
+      POSTGRES_PASSWORD: arxgorithm
+      POSTGRES_DB: arxgorithm
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  crawler:
+    build:
+      context: ./crawler
+      dockerfile: Dockerfile
+    environment:
+      - HELIXDB_URL=http://helixdb:6334
+      - DATABASE_URL=postgresql://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+    depends_on:
+      - helixdb
+      - postgres
+
+volumes:
+  helixdb_data:
+  postgres_data:
