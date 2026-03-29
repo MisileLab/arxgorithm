@@ -1,0 +1,25 @@
+[project]
+name = "arxgorithm-crawler"
+version = "0.1.0"
+description = "arXiv paper crawler — fetch, embed, store for the arxgorithm platform"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0"
+dependencies = [
+    "httpx>=0.28.0",
+    "lxml>=5.0",
+    "sentence-transformers>=3.0",
+    "asyncpg>=0.30.0",
+    "click>=8.1",
+    "tenacity>=8.2",
+]
+
+[project.scripts]
+crawl = "crawler.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crawler"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

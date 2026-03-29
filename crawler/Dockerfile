@@ -1,8 +1,16 @@
 FROM python:3.11-slim
 
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-CMD ["python", "-m", "crawler.main"]
+WORKDIR /app
+
+# Copy project definition first for layer caching
+COPY pyproject.toml .
+RUN uv sync --no-dev --no-install-project
+
+# Copy source code
+COPY crawler/ crawler/
+RUN uv sync --no-dev
+
+ENTRYPOINT ["uv", "run", "crawl"]

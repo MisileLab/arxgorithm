@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   frontend:
     build:
@@ -20,10 +18,13 @@ services:
       - "8000:8000"
     environment:
       - HELIXDB_URL=http://helixdb:6334
-      - DATABASE_URL=postgresql://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+      - DATABASE_URL=postgresql+asyncpg://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+      - CORS_ORIGINS=["http://localhost:3000"]
     depends_on:
-      - helixdb
-      - postgres
+      helixdb:
+        condition: service_started
+      postgres:
+        condition: service_started
 
   helixdb:
     image: helixdb/helixdb:latest
@@ -53,6 +54,8 @@ services:
     depends_on:
       - helixdb
       - postgres
+    profiles:
+      - crawler
 
 volumes:
   helixdb_data:

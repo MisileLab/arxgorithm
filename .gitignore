@@ -30,3 +30,9 @@ helixdb_data/
 # Misc
 *.log
 .cache/
+
+# Package locks (use uv.lock from crawler/backend)
+package-lock.json
+
+# Crawler data
+crawler/data/
