@@ -20,6 +20,9 @@ from crawler.config import (
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_DIMENSION,
     LOG_LEVEL,
+    CRAWL_SCHEDULE_HOURS,
+    CRAWL_QUERY,
+    CRAWL_MAX_RESULTS,
 )
 
 logger = logging.getLogger("crawler")
@@ -253,6 +256,54 @@ async def _stats() -> None:
 
     click.echo(f"Papers in PostgreSQL: {paper_count}")
     click.echo(f"Papers with embeddings: {vector_count}")
+
+
+# ─── schedule ────────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--query", "-q", default=CRAWL_QUERY, help="arXiv search query")
+@click.option("--max", "max_results", default=CRAWL_MAX_RESULTS, help="Max papers per run")
+@click.option("--interval", default=CRAWL_SCHEDULE_HOURS, help="Hours between crawls")
+def schedule(query: str, max_results: int, interval: int) -> None:
+    """Run crawler on a repeating schedule (default: every 24h)."""
+    asyncio.run(_schedule(query, max_results, interval))
+
+
+async def _schedule(query: str, max_results: int, interval_hours: int) -> None:
+    import signal
+
+    stop_event = asyncio.Event()
+
+    def _shutdown(signum, frame):
+        logger.info("Received signal %s, shutting down...", signal.Signals(signum).name)
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    logger.info("Scheduler started: query=%r max=%d interval=%dh", query, max_results, interval_hours)
+
+    while not stop_event.is_set():
+        start = datetime.now(timezone.utc)
+        logger.info("=== Crawl run started at %s ===", start.isoformat())
+
+        try:
+            await _search(query, max_results, "submittedDate", "descending", True, True, None)
+        except Exception:
+            logger.exception("Crawl run failed")
+
+        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+        wait = max(0, interval_hours * 3600 - elapsed)
+        logger.info("Crawl run finished in %.0fs. Next run in %.0fs.", elapsed, wait)
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=wait)
+            break  # stop_event was set
+        except asyncio.TimeoutError:
+            pass  # normal: interval elapsed, loop again
+
+    logger.info("Scheduler stopped.")
 
 
 # ─── Shared helpers ──────────────────────────────────────────────────────────

@@ -27,3 +27,4 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv
 USER app
 
 ENTRYPOINT ["uv", "run", "crawl"]
+CMD ["schedule"]

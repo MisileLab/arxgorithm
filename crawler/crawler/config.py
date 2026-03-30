@@ -23,3 +23,8 @@ ARXIV_MAX_RESULTS_PER_PAGE = int(os.environ.get("ARXIV_MAX_RESULTS_PER_PAGE", "2
 
 # Logging
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+
+# Scheduled crawling
+CRAWL_SCHEDULE_HOURS = int(os.environ.get("CRAWL_SCHEDULE_HOURS", "24"))
+CRAWL_QUERY = os.environ.get("CRAWL_QUERY", "cat:cs.AI")
+CRAWL_MAX_RESULTS = int(os.environ.get("CRAWL_MAX_RESULTS", "200"))
