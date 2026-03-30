@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
+    env_file: .env
     environment:
       - VITE_API_URL=http://localhost:8000
     depends_on:
@@ -16,10 +17,7 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://arxgorithm:arxgorithm@postgres:5432/arxgorithm
-      - DEEPINFRA_API_KEY=OJu8NJ4ukAHZ43vDfNLnkLH6bC2YULN1
-      - CORS_ORIGINS=["http://localhost:3000"]
+    env_file: .env
     depends_on:
       postgres:
         condition: service_started
@@ -39,9 +37,7 @@ services:
     build:
       context: ./crawler
       dockerfile: Dockerfile
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://arxgorithm:arxgorithm@postgres:5432/arxgorithm
-      - DEEPINFRA_API_KEY=OJu8NJ4ukAHZ43vDfNLnkLH6bC2YULN1
+    env_file: .env
     depends_on:
       - postgres
     profiles:

@@ -14,111 +14,84 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-backend:
-    name: Backend
+  detect-changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      crawler: ${{ steps.filter.outputs.crawler }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+            crawler:
+              - 'crawler/**'
+            frontend:
+              - 'frontend/**'
+
+  build:
+    name: ${{ matrix.service }}
+    needs: detect-changes
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      matrix:
+        include:
+          - service: backend
+            context: ./backend
+            should_run: ${{ needs.detect-changes.outputs.backend == 'true' }}
+          - service: crawler
+            context: ./crawler
+            should_run: ${{ needs.detect-changes.outputs.crawler == 'true' }}
+          - service: frontend
+            context: ./frontend
+            should_run: ${{ needs.detect-changes.outputs.frontend == 'true' }}
 
     steps:
+      - name: Skip (no changes)
+        if: ${{ !matrix.should_run && github.event_name != 'workflow_dispatch' }}
+        run: echo "No changes detected for ${{ matrix.service }}, skipping."
+
       - name: Checkout
+        if: ${{ matrix.should_run || github.event_name == 'workflow_dispatch' }}
         uses: actions/checkout@v4
 
       - name: Log in to GHCR
+        if: ${{ matrix.should_run || github.event_name == 'workflow_dispatch' }}
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up Docker Buildx
+        if: ${{ matrix.should_run || github.event_name == 'workflow_dispatch' }}
+        uses: docker/setup-buildx-action@v3
+
       - name: Extract metadata
+        if: ${{ matrix.should_run || github.event_name == 'workflow_dispatch' }}
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/backend
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
           tags: |
             type=sha,prefix=
             type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push
+        if: ${{ matrix.should_run || github.event_name == 'workflow_dispatch' }}
         uses: docker/build-push-action@v6
         with:
-          context: ./backend
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-crawler:
-    name: Crawler
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/crawler
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ./crawler
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  build-frontend:
-    name: Frontend
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}/frontend
-          tags: |
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
+          context: ${{ matrix.context }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
