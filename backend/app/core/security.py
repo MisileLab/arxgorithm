@@ -2,22 +2,27 @@
 
 from datetime import datetime, timedelta, timezone
 
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import jwt
+from jwt.exceptions import InvalidTokenError
+import argon2
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
 
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_hasher = argon2.PasswordHasher()
 
 
 # ── Password helpers ────────────────────────────────────────────────
 
 def hash_password(plain: str) -> str:
-    return pwd_context.hash(plain)
+    return _hasher.hash(plain)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return _hasher.verify(hashed, plain)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
 
 
 # ── JWT helpers ─────────────────────────────────────────────────────
@@ -37,5 +42,5 @@ def decode_access_token(token: str) -> str | None:
             token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm]
         )
         return payload.get("sub")
-    except JWTError:
+    except InvalidTokenError:
         return None

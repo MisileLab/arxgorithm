@@ -1,9 +1,9 @@
-"""HelixDB vector storage client via REST API."""
+"""pgvector storage for paper embeddings via asyncpg."""
 
 import logging
 from typing import Sequence
 
-import httpx
+import asyncpg
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -11,103 +11,77 @@ from tenacity import (
     wait_exponential,
 )
 
-logger = logging.getLogger(__name__)
+from crawler.config import EMBEDDING_DIMENSION
 
-HELIXDB_DEFAULT_URL = "http://localhost:6334"
-COLLECTION_NAME = "arxiv_papers"
+logger = logging.getLogger(__name__)
 
 
 class VectorStore:
-    """Async HelixDB client for storing and searching paper embeddings."""
+    """Async PostgreSQL+pgvector client for storing and searching paper embeddings."""
 
-    def __init__(self, base_url: str = HELIXDB_DEFAULT_URL, timeout: float = 30.0):
-        self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
-        self._client: httpx.AsyncClient | None = None
+    def __init__(self, dsn: str, embedding_dimension: int = EMBEDDING_DIMENSION):
+        self._dsn = dsn
+        self._embedding_dimension = embedding_dimension
+        self._pool: asyncpg.Pool | None = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=self._timeout,
-                headers={"Content-Type": "application/json"},
-            )
-        return self._client
+    async def connect(self) -> None:
+        """Create connection pool and ensure the pgvector extension exists."""
+        logger.info("Connecting to PostgreSQL (vector store): %s", self._dsn.split("@")[-1])
+        self._pool = await asyncpg.create_pool(self._dsn, min_size=2, max_size=10)
+        await self.ensure_extension()
+        logger.info("PostgreSQL vector store connected and pgvector extension ready")
+
+    async def ensure_extension(self) -> None:
+        """Create the pgvector extension if it doesn't exist."""
+        async with self._pool.acquire() as conn:
+            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     async def close(self) -> None:
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+        if self._pool:
+            await self._pool.close()
+            self._pool = None
 
     async def __aenter__(self) -> "VectorStore":
+        await self.connect()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
-    # ---- Collection management ----
-
-    async def ensure_collection(self, vector_size: int = 384) -> None:
-        """Create the papers collection if it doesn't exist."""
-        client = await self._get_client()
-        # Check if collection exists
-        try:
-            resp = await client.get(f"/collections/{COLLECTION_NAME}")
-            if resp.status_code == 200:
-                logger.info("Collection '%s' already exists", COLLECTION_NAME)
-                return
-        except httpx.HTTPStatusError:
-            pass
-
-        # Create collection with cosine distance
-        resp = await client.put(
-            f"/collections/{COLLECTION_NAME}",
-            json={
-                "vectors": {
-                    "size": vector_size,
-                    "distance": "Cosine",
-                },
-            },
-        )
-        resp.raise_for_status()
-        logger.info("Created collection '%s' (dim=%d)", COLLECTION_NAME, vector_size)
-
-    async def delete_collection(self) -> None:
-        """Delete the papers collection."""
-        client = await self._get_client()
-        try:
-            resp = await client.delete(f"/collections/{COLLECTION_NAME}")
-            resp.raise_for_status()
-            logger.info("Deleted collection '%s'", COLLECTION_NAME)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code != 404:
-                raise
-
     # ---- Vector operations ----
 
     @retry(
-        retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.ConnectError)),
+        retry=retry_if_exception_type((asyncpg.PostgresError, asyncpg.ConnectionDoesNotExistError, OSError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
     )
     async def upsert_vectors(self, points: Sequence[dict]) -> None:
         """
-        Upsert vector points into HelixDB.
+        Upsert vector embeddings into the papers table.
 
         Each point should have:
           - id: string (arxiv_id)
           - vector: list[float]
-          - payload: dict (metadata)
+          - payload: dict (metadata, unused — stored in papers table already)
         """
         if not points:
             return
 
-        client = await self._get_client()
-        resp = await client.put(
-            f"/collections/{COLLECTION_NAME}/points",
-            json={"points": points},
-        )
-        resp.raise_for_status()
-        logger.info("Upserted %d vectors into HelixDB", len(points))
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                for point in points:
+                    arxiv_id = point["id"]
+                    vector = point["vector"]
+                    await conn.execute(
+                        """
+                        UPDATE papers
+                        SET embedding = $2
+                        WHERE arxiv_id = $1
+                        """,
+                        arxiv_id,
+                        str(vector),  # asyncpg handles array-to-vector cast via string
+                    )
+        logger.info("Upserted %d vectors into pgvector", len(points))
 
     async def upsert_papers(
         self,
@@ -116,32 +90,28 @@ class VectorStore:
         payloads: Sequence[dict],
     ) -> None:
         """
-        Convenience method: upsert paper embeddings with metadata payloads.
+        Convenience method: upsert paper embeddings into the papers table.
 
         Args:
             paper_ids: arXiv paper IDs.
             vectors: Corresponding embedding vectors.
-            payloads: Metadata dicts for each paper.
+            payloads: Metadata dicts (ignored — metadata is already in the papers table).
         """
-        # Process in batches of 100 to avoid oversized requests
+        # Process in batches of 100
         batch_size = 100
         for i in range(0, len(paper_ids), batch_size):
             batch_ids = paper_ids[i : i + batch_size]
             batch_vectors = vectors[i : i + batch_size]
-            batch_payloads = payloads[i : i + batch_size]
+            # payloads intentionally unused — metadata already stored in papers table
 
             points = [
-                {
-                    "id": pid,
-                    "vector": vec,
-                    "payload": payload,
-                }
-                for pid, vec, payload in zip(batch_ids, batch_vectors, batch_payloads)
+                {"id": pid, "vector": vec}
+                for pid, vec in zip(batch_ids, batch_vectors)
             ]
             await self.upsert_vectors(points)
 
     @retry(
-        retry=retry_if_exception_type((httpx.HTTPStatusError, httpx.ConnectError)),
+        retry=retry_if_exception_type((asyncpg.PostgresError, asyncpg.ConnectionDoesNotExistError, OSError)),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=30),
     )
@@ -152,31 +122,49 @@ class VectorStore:
         score_threshold: float = 0.0,
     ) -> list[dict]:
         """
-        Search for similar papers by embedding vector.
+        Search for similar papers by embedding vector using cosine distance.
 
         Returns list of dicts with 'id', 'score', 'payload'.
         """
-        client = await self._get_client()
-        resp = await client.post(
-            f"/collections/{COLLECTION_NAME}/search",
-            json={
-                "vector": query_vector,
-                "limit": limit,
-                "score_threshold": score_threshold,
-                "with_payload": True,
-            },
-        )
-        resp.raise_for_status()
-        results = resp.json()
-        return results if isinstance(results, list) else results.get("results", [])
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT arxiv_id AS id,
+                       1 - (embedding <=> $1::vector) AS score,
+                       json_build_object(
+                           'title', title,
+                           'categories', categories,
+                           'published_at', published_at
+                       ) AS payload
+                FROM papers
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> $1::vector
+                LIMIT $2
+                """,
+                str(query_vector),
+                limit,
+            )
+
+        results = []
+        for row in rows:
+            entry = dict(row)
+            if entry.get("score", 0) >= score_threshold:
+                results.append(entry)
+        return results
 
     async def count_vectors(self) -> int:
-        """Get the number of vectors in the collection."""
-        client = await self._get_client()
-        try:
-            resp = await client.get(f"/collections/{COLLECTION_NAME}")
-            resp.raise_for_status()
-            info = resp.json()
-            return info.get("vectors_count", info.get("points_count", 0))
-        except httpx.HTTPStatusError:
-            return 0
+        """Get the number of papers with embeddings stored."""
+        async with self._pool.acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM papers WHERE embedding IS NOT NULL"
+            )
+            return count or 0
+
+    async def ensure_collection(self, vector_size: int = EMBEDDING_DIMENSION) -> None:
+        """No-op kept for API compatibility. pgvector doesn't use collections."""
+        await self.ensure_extension()
+        logger.info("pgvector extension ensured (dim=%d)", vector_size)
+
+    async def delete_collection(self) -> None:
+        """No-op kept for API compatibility."""
+        logger.warning("delete_collection() is a no-op with pgvector")

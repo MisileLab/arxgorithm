@@ -25,7 +25,7 @@ uv run crawl search --query "ti:transformer" --sort-by relevance --max 50
 uv run crawl bulk --path /data/arxiv-dump.xml
 
 # Generate embeddings for stored papers
-uv run crawl embed --model all-MiniLM-L6-v2
+uv run crawl embed --model Qwen/Qwen3-Embedding-0.6B
 
 # Show statistics
 uv run crawl stats
@@ -35,18 +35,17 @@ uv run crawl stats
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `postgresql://arxgorithm:arxgorithm@localhost:5432/arxgorithm` | PostgreSQL connection string |
-| `HELIXDB_URL` | `http://localhost:6334` | HelixDB REST API URL |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformers model |
+| `DATABASE_URL` | `postgresql://arxgorithm:***@localhost:5432/arxgorithm` | PostgreSQL connection string |
+| `EMBEDDING_MODEL` | `Qwen/Qwen3-Embedding-0.6B` | Embedding model name |
 | `EMBEDDING_BATCH_SIZE` | `64` | Batch size for embedding generation |
-| `EMBEDDING_DIMENSION` | `384` | Embedding vector dimension |
+| `EMBEDDING_DIMENSION` | `1024` | Embedding vector dimension |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ## What it does
 
 1. Fetch paper metadata from arXiv API (Atom XML) or bulk dumps
-2. Generate embeddings (title + abstract) using sentence-transformers
-3. Store vectors in HelixDB (vector database, REST API on port 6334)
+2. Generate embeddings (title + abstract) using DeepInfra API (Qwen3-Embedding-0.6B)
+3. Store embeddings in PostgreSQL via pgvector
 4. Store metadata in PostgreSQL (asyncpg)
 5. Full CLI with search, bulk processing, and embedding commands
 
@@ -57,8 +56,8 @@ crawler/
   __init__.py        # Package init
   main.py            # CLI entry point (click)
   arxiv_client.py    # Async arXiv API client with rate limiting
-  embedder.py        # Sentence-transformers embedding pipeline
+  embedder.py        # DeepInfra embedding pipeline
   db.py              # PostgreSQL storage via asyncpg
-  vector_store.py    # HelixDB vector storage via httpx
+  vector_store.py    # pgvector embedding storage via asyncpg
   config.py          # Configuration from environment
 ```

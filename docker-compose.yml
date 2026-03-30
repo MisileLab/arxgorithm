@@ -17,24 +17,15 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - HELIXDB_URL=http://helixdb:6334
       - DATABASE_URL=postgresql+asyncpg://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+      - DEEPINFRA_API_KEY=OJu8NJ4ukAHZ43vDfNLnkLH6bC2YULN1
       - CORS_ORIGINS=["http://localhost:3000"]
     depends_on:
-      helixdb:
-        condition: service_started
       postgres:
         condition: service_started
 
-  helixdb:
-    image: helixdb/helixdb:latest
-    ports:
-      - "6334:6334"
-    volumes:
-      - helixdb_data:/data
-
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: arxgorithm
       POSTGRES_PASSWORD: arxgorithm
@@ -42,21 +33,19 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
 
   crawler:
     build:
       context: ./crawler
       dockerfile: Dockerfile
     environment:
-      - HELIXDB_URL=http://helixdb:6334
-      - DATABASE_URL=postgresql://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+      - DATABASE_URL=postgresql+asyncpg://arxgorithm:arxgorithm@postgres:5432/arxgorithm
+      - DEEPINFRA_API_KEY=OJu8NJ4ukAHZ43vDfNLnkLH6bC2YULN1
     depends_on:
-      - helixdb
       - postgres
     profiles:
       - crawler
 
 volumes:
-  helixdb_data:
   postgres_data:

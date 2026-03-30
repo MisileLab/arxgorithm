@@ -8,7 +8,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 
-import httpx
+from openai import OpenAI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,13 @@ from app.models.db_models import Interaction, InteractionType, Paper, ReadingHis
 from app.models.recommendation import RecommendationReason, RecommendationResponse
 
 logger = logging.getLogger(__name__)
+
+# Module-level OpenAI client for LLM calls
+_llm_client = OpenAI(
+    api_key=settings.llm_api_key,
+    base_url=settings.llm_base_url,
+)
+
 
 # ── Collaborative Filtering ────────────────────────────────────────────
 
@@ -94,7 +101,7 @@ async def content_based_filter(
 ) -> list[str]:
     """
     Build a profile embedding from the user's reading history and find
-    similar papers via HelixDB.
+    similar papers via pgvector.
     """
     # Fetch papers the user has read
     stmt = (
@@ -114,7 +121,7 @@ async def content_based_filter(
     combined_text = " ".join(f"{p.title} {p.abstract}" for p in papers[:20])
     embedding = embed_text(combined_text)
 
-    # Search HelixDB for similar papers
+    # Search for similar papers via pgvector
     from app.services.search_service import search_similar_with_db
 
     similar = await search_similar_with_db(
@@ -173,38 +180,41 @@ async def agentic_reason(
     reasons: list[RecommendationReason] = []
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(
-                f"{settings.llm_base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.llm_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.llm_model,
-                    "messages": [
-                        {"role": "system", "content": "You are a JSON-only response engine."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 1024,
-                },
-            )
-            resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+        completion = _llm_client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[
+                {"role": "system", "content": "You are a JSON-only response engine."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        content = completion.choices[0].message.content
 
-            # Try to parse JSON from the response
-            parsed = json.loads(content)
-            if isinstance(parsed, list):
-                for item in parsed:
-                    reasons.append(
-                        RecommendationReason(
-                            paper_id=item.get("paper_id", ""),
-                            reason=item.get("reason", ""),
-                        )
+        # Try to parse JSON from the response
+        parsed = json.loads(content)
+        if isinstance(parsed, list):
+            for item in parsed:
+                reasons.append(
+                    RecommendationReason(
+                        paper_id=item.get("paper_id", ""),
+                        reason=item.get("reason", ""),
                     )
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError) as exc:
+                )
+    except (json.JSONDecodeError, KeyError, IndexError) as exc:
         logger.warning("Agentic reasoning failed: %s – using fallback reasons", exc)
+        # Fallback: generate simple reasons
+        for pid in paper_ids:
+            p = paper_map.get(pid)
+            title = p.title if p else pid
+            reasons.append(
+                RecommendationReason(
+                    paper_id=pid,
+                    reason=f"Recommended based on similarity to your reading history: \"{title}\"",
+                )
+            )
+    except Exception as exc:
+        logger.warning("Agentic reasoning LLM call failed: %s – using fallback reasons", exc)
         # Fallback: generate simple reasons
         for pid in paper_ids:
             p = paper_map.get(pid)

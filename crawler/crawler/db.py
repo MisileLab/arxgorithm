@@ -151,21 +151,25 @@ class PaperStore:
         return dict(row)
 
     async def get_unembedded_papers(self, limit: int = 100) -> list[dict]:
-        """Get papers that don't have a corresponding vector in HelixDB yet.
+        """Get papers that don't have an embedding stored yet.
 
-        This is a heuristic — it checks for papers not in the recent
-        embedding log. For now, just returns the most recent papers.
+        Returns the most recent papers without embeddings.
         """
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM papers
+                WHERE embedding IS NULL
                 ORDER BY published_at DESC
                 LIMIT $1
                 """,
                 limit,
             )
         return [dict(r) for r in rows]
+
+    async def get_papers_without_embeddings(self, limit: int = 100) -> list[dict]:
+        """Get papers that don't have an embedding stored yet (alias)."""
+        return await self.get_unembedded_papers(limit)
 
     async def count_papers(self) -> int:
         async with self._pool.acquire() as conn:

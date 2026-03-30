@@ -4,6 +4,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     Column,
     DateTime,
@@ -17,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.config import settings
 from app.core.database import Base
 
 
@@ -90,6 +92,9 @@ class Paper(TimestampMixin, Base):
     )
     pdf_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     doi: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # pgvector embedding column
+    embedding = mapped_column(Vector(settings.embedding_dimension), nullable=True)
 
     # relationships
     bookmarks: Mapped[list["Bookmark"]] = relationship(

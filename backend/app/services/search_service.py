@@ -1,12 +1,11 @@
-"""HelixDB vector search service."""
+"""pgvector similarity search service."""
 
 from __future__ import annotations
 
 import logging
 from uuid import UUID
 
-import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -15,14 +14,12 @@ from app.models.db_models import Paper
 
 logger = logging.getLogger(__name__)
 
-HELIXDB_COLLECTION = "papers"
-
 
 # ── Public API ─────────────────────────────────────────────────────────
 
 
 def embed_query(text: str) -> list[float]:
-    """Embed a query string using the local sentence-transformers model."""
+    """Embed a query string using the configured embedding model."""
     return embed_text(text)
 
 
@@ -33,55 +30,15 @@ async def search_similar(
     category_filter: list[str] | None = None,
 ) -> list[tuple[Paper, float]]:
     """
-    Search for papers with similar embeddings via HelixDB,
-    then fetch the full Paper rows from PostgreSQL.
+    Search for papers with similar embeddings using pgvector.
 
-    Returns a list of (Paper, similarity_score) tuples sorted by score desc.
+    Creates its own database session. Returns a list of
+    (Paper, similarity_score) tuples sorted by similarity desc.
     """
-    # Build HelixDB search payload
-    payload: dict = {
-        "collection": HELIXDB_COLLECTION,
-        "vector": embedding,
-        "limit": limit,
-    }
-    if category_filter:
-        payload["filter"] = {
-            "categories": {"$overlap": category_filter},
-        }
+    from app.core.database import async_session_factory
 
-    arxiv_ids_with_scores: list[tuple[str, float]] = []
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.helixdb_url}/search",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            # HelixDB returns {"results": [{"id": ..., "score": ...}, ...]}
-            results = data.get("results", data if isinstance(data, list) else [])
-            for hit in results[:limit]:
-                arxiv_id = hit.get("id") or hit.get("arxiv_id", "")
-                score = float(hit.get("score", 0.0))
-                if arxiv_id:
-                    arxiv_ids_with_scores.append((arxiv_id, score))
-    except httpx.HTTPError as exc:
-        logger.warning("HelixDB search failed: %s – returning empty results", exc)
-        return []
-
-    if not arxiv_ids_with_scores:
-        return []
-
-    # Fetch matching Paper rows from Postgres
-    ids_only = [aid for aid, _ in arxiv_ids_with_scores]
-    score_map: dict[str, float] = dict(arxiv_ids_with_scores)
-
-    # We need a db session – callers should pass one, or we create a short-lived one
-    # For simplicity this function accepts an AsyncSession.
-    # The router will supply it.
-    return await _fetch_papers_by_arxiv_ids(ids_only, score_map, category_filter)
+    async with async_session_factory() as db:
+        return await _do_search(db, embedding, limit=limit, category_filter=category_filter)
 
 
 async def search_similar_with_db(
@@ -92,109 +49,86 @@ async def search_similar_with_db(
     category_filter: list[str] | None = None,
 ) -> list[tuple[Paper, float]]:
     """
-    Search for papers with similar embeddings via HelixDB,
-    then fetch the full Paper rows from PostgreSQL using *db*.
+    Search for papers with similar embeddings using pgvector,
+    using the provided *db* session.
     """
-    payload: dict = {
-        "collection": HELIXDB_COLLECTION,
-        "vector": embedding,
-        "limit": limit,
-    }
-    if category_filter:
-        payload["filter"] = {
-            "categories": {"$overlap": category_filter},
-        }
-
-    arxiv_ids_with_scores: list[tuple[str, float]] = []
-
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.helixdb_url}/search",
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-            results = data.get("results", data if isinstance(data, list) else [])
-            for hit in results[:limit]:
-                arxiv_id = hit.get("id") or hit.get("arxiv_id", "")
-                score = float(hit.get("score", 0.0))
-                if arxiv_id:
-                    arxiv_ids_with_scores.append((arxiv_id, score))
-    except httpx.HTTPError as exc:
-        logger.warning("HelixDB search failed: %s – returning empty results", exc)
-        return []
-
-    if not arxiv_ids_with_scores:
-        return []
-
-    ids_only = [aid for aid, _ in arxiv_ids_with_scores]
-    score_map: dict[str, float] = dict(arxiv_ids_with_scores)
-
-    stmt = select(Paper).where(Paper.arxiv_id.in_(ids_only))
-    result = await db.execute(stmt)
-    papers = result.scalars().all()
-
-    # Preserve HelixDB ordering
-    paper_by_id = {p.arxiv_id: p for p in papers}
-    ordered: list[tuple[Paper, float]] = []
-    for aid, score in arxiv_ids_with_scores:
-        if aid in paper_by_id:
-            ordered.append((paper_by_id[aid], score))
-
-    return ordered
+    return await _do_search(db, embedding, limit=limit, category_filter=category_filter)
 
 
-async def index_paper(paper: Paper, embedding: list[float] | None = None) -> bool:
-    """Upsert a paper into HelixDB so it can be found via vector search."""
+async def index_paper(
+    paper: Paper,
+    embedding: list[float] | None = None,
+    db: AsyncSession | None = None,
+) -> bool:
+    """Store a paper's embedding in the papers table via pgvector.
+
+    If *db* is None, creates a short-lived session.
+    """
     if embedding is None:
         text = f"{paper.title} {paper.abstract}"
         embedding = embed_text(text)
 
-    payload = {
-        "collection": HELIXDB_COLLECTION,
-        "id": paper.arxiv_id,
-        "vector": embedding,
-        "metadata": {
-            "arxiv_id": paper.arxiv_id,
-            "title": paper.title,
-            "categories": paper.categories or [],
-        },
-    }
+    own_session = db is None
+    if own_session:
+        from app.core.database import async_session_factory
+        db = async_session_factory()
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                f"{settings.helixdb_url}/upsert",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return True
-    except httpx.HTTPError as exc:
-        logger.error("HelixDB upsert failed for %s: %s", paper.arxiv_id, exc)
+        stmt = (
+            update(Paper)
+            .where(Paper.arxiv_id == paper.arxiv_id)
+            .values(embedding=embedding)
+        )
+        await db.execute(stmt)
+        if own_session:
+            await db.commit()
+        return True
+    except Exception as exc:
+        logger.error("pgvector index failed for %s: %s", paper.arxiv_id, exc)
+        if own_session:
+            await db.rollback()
         return False
+    finally:
+        if own_session:
+            await db.close()
 
 
 # ── Internal helpers ───────────────────────────────────────────────────
 
 
-async def _fetch_papers_by_arxiv_ids(
-    arxiv_ids: list[str],
-    score_map: dict[str, float],
-    category_filter: list[str] | None,
+async def _do_search(
+    db: AsyncSession,
+    embedding: list[float],
+    *,
+    limit: int = 10,
+    category_filter: list[str] | None = None,
 ) -> list[tuple[Paper, float]]:
-    """Fallback that creates its own session (used when no db passed)."""
-    from app.core.database import async_session_factory
+    """Execute a cosine-distance similarity search via pgvector."""
+    try:
+        # Build the query: compute cosine distance and order by it ascending
+        # (lower distance = more similar). Convert to similarity score: 1 - distance.
+        stmt = (
+            select(
+                Paper,
+                (1 - Paper.embedding.cosine_distance(embedding)).label("score"),
+            )
+            .where(Paper.embedding.isnot(None))
+        )
 
-    async with async_session_factory() as db:
-        stmt = select(Paper).where(Paper.arxiv_id.in_(arxiv_ids))
+        # Apply category filter using JSON overlap (PostgreSQL && operator on arrays)
+        if category_filter:
+            # Filter papers whose categories array overlaps with the filter
+            stmt = stmt.where(
+                Paper.categories.bool_op("&&")(category_filter)
+            )
+
+        stmt = stmt.order_by(Paper.embedding.cosine_distance(embedding)).limit(limit)
+
         result = await db.execute(stmt)
-        papers = result.scalars().all()
+        rows = result.all()
 
-        paper_by_id = {p.arxiv_id: p for p in papers}
-        ordered: list[tuple[Paper, float]] = []
-        for aid, score in arxiv_ids:
-            if aid in paper_by_id:
-                ordered.append((paper_by_id[aid], score))
-        return ordered
+        return [(paper, float(score)) for paper, score in rows]
+
+    except Exception as exc:
+        logger.warning("pgvector search failed: %s – returning empty results", exc)
+        return []

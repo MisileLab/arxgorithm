@@ -2,6 +2,7 @@
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy import text
 
 from app.core.config import settings
 
@@ -40,4 +41,6 @@ async def get_db() -> AsyncSession:  # type: ignore[misc]
 async def init_db() -> None:
     """Create all tables. In production, use Alembic migrations instead."""
     async with engine.begin() as conn:
+        # Enable pgvector extension before creating tables
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)

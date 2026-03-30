@@ -19,7 +19,6 @@ from crawler.config import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_DIMENSION,
-    HELIXDB_URL,
     LOG_LEVEL,
 )
 
@@ -191,7 +190,10 @@ async def _embed(model: str, limit: int, re_embed: bool) -> None:
     logger.info("Embedding papers with model: %s", model)
 
     async with PaperStore(DATABASE_URL) as store:
-        papers = await store.get_unembedded_papers(limit=limit if limit > 0 else 10000)
+        if re_embed:
+            papers = await store.get_unembedded_papers(limit=limit if limit > 0 else 10000)
+        else:
+            papers = await store.get_papers_without_embeddings(limit=limit if limit > 0 else 10000)
 
     if not papers:
         logger.info("No papers to embed")
@@ -204,7 +206,7 @@ async def _embed(model: str, limit: int, re_embed: bool) -> None:
     ]
     vectors = generate_embeddings_batch(texts, model_name=model, show_progress=True)
 
-    # Build payloads
+    # Build payloads (metadata already in papers table, but keep for API compat)
     ids = [p["arxiv_id"] for p in papers]
     payloads = [
         {
@@ -215,7 +217,7 @@ async def _embed(model: str, limit: int, re_embed: bool) -> None:
         for p in papers
     ]
 
-    async with VectorStore(HELIXDB_URL) as vs:
+    async with VectorStore(DATABASE_URL) as vs:
         await vs.ensure_collection(vector_size=len(vectors[0]) if vectors else EMBEDDING_DIMENSION)
         await vs.upsert_papers(ids, vectors, payloads)
 
@@ -243,21 +245,21 @@ async def _stats() -> None:
         paper_count = "N/A"
 
     try:
-        async with VectorStore(HELIXDB_URL) as vs:
+        async with VectorStore(DATABASE_URL) as vs:
             vector_count = await vs.count_vectors()
     except Exception as e:
-        logger.warning("Could not connect to HelixDB: %s", e)
+        logger.warning("Could not connect to PostgreSQL (vector store): %s", e)
         vector_count = "N/A"
 
     click.echo(f"Papers in PostgreSQL: {paper_count}")
-    click.echo(f"Vectors in HelixDB:   {vector_count}")
+    click.echo(f"Papers with embeddings: {vector_count}")
 
 
 # ─── Shared helpers ──────────────────────────────────────────────────────────
 
 
 async def _store_papers(papers, vectors: list[list[float]]) -> None:
-    """Store papers and their vectors in PostgreSQL + HelixDB."""
+    """Store papers and their vectors in PostgreSQL (metadata + pgvector embeddings)."""
     from crawler.db import PaperStore
     from crawler.embedder import generate_embeddings_batch
     from crawler.vector_store import VectorStore
@@ -271,7 +273,7 @@ async def _store_papers(papers, vectors: list[list[float]]) -> None:
         logger.exception("Failed to store papers in PostgreSQL")
         # Continue to try vector store anyway
 
-    # Store vectors in HelixDB
+    # Store embeddings via pgvector
     if vectors:
         ids = [p.arxiv_id for p in papers]
         payloads = [
@@ -283,11 +285,11 @@ async def _store_papers(papers, vectors: list[list[float]]) -> None:
             for p in papers
         ]
         try:
-            async with VectorStore(HELIXDB_URL) as vs:
+            async with VectorStore(DATABASE_URL) as vs:
                 await vs.ensure_collection(vector_size=len(vectors[0]))
                 await vs.upsert_papers(ids, vectors, payloads)
         except Exception:
-            logger.exception("Failed to store vectors in HelixDB")
+            logger.exception("Failed to store vectors in pgvector")
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────

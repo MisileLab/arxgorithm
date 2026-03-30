@@ -43,7 +43,7 @@ async def search_papers(
     db: DbSession,
     current_user: CurrentUser,
 ):
-    """Search papers by semantic similarity via HelixDB vector search."""
+    """Search papers by semantic similarity via pgvector."""
     embedding = embed_query(request.query)
 
     category_filter = None

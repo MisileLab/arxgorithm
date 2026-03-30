@@ -17,9 +17,6 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/arxgorithm"
 
-    # HelixDB vector store
-    helixdb_url: str = "http://localhost:6334"
-
     # JWT Authentication
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
@@ -30,8 +27,11 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
 
-    # Embedding model
-    embedding_model_name: str = "all-MiniLM-L6-v2"
+    # DeepInfra Embedding API
+    deepinfra_api_key: str = ""
+    embedding_api_url: str = "https://api.deepinfra.com/v1/openai/embeddings"
+    embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    embedding_dimension: int = 1024
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
