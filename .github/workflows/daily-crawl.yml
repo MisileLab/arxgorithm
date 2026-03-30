@@ -1,0 +1,31 @@
+name: Daily Crawl
+
+on:
+  schedule:
+    # Every day at 00:00 UTC (09:00 KST)
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  crawl:
+    name: Run crawler
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull crawler image
+        run: docker pull ghcr.io/misilelab/arxgorithm/crawler:latest
+
+      - name: Run crawl
+        run: |
+          docker run --rm \
+            -e DATABASE_URL="${{ secrets.CRAWL_DATABASE_URL }}" \
+            -e DEEPINFRA_API_KEY="${{ secrets.CRAWL_DEEPINFRA_API_KEY }}" \
+            ghcr.io/misilelab/arxgorithm/crawler:latest \
+            search --query "cat:cs.AI" --max 200 --store --embed
